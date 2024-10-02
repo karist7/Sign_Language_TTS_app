@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- 기본 애플리케이션 테마 -->
+    <style name="Theme.Thesis" parent="Theme.AppCompat.Light.DarkActionBar">
+        <!-- 여기서 테마를 커스터마이징하세요 -->
+        <item name="colorPrimary">@color/purple_500</item>
+        <item name="colorPrimaryDark">@color/purple_700</item>
+        <item name="colorAccent">@color/teal_200</item>
+        <item name="android:windowBackground">@color/white</item>
+    </style>
+</resources>
