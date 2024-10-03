@@ -58,9 +58,18 @@ import androidx.core.content.PermissionChecker
 import com.thesis.MainViewModel
 import com.thesis.databinding.FragmentCameraBinding
 import com.google.mediapipe.tasks.vision.core.RunningMode
+import com.thesis.ApiService
 import com.thesis.HandLandmarkerHelper
-import com.thesis.PoseLandmarkerHelper
 import com.thesis.R
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.RequestBody
+import okhttp3.ResponseBody
+import retrofit2.Call
+import retrofit2.Response
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+import retrofit2.http.Multipart
 import java.io.File
 import java.io.FileInputStream
 import java.text.SimpleDateFormat
@@ -99,7 +108,11 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener{
     private var videoCapture: VideoCapture<Recorder>? = null
     private var currentRecording: Recording? = null
     private var isRecording=false
-
+    private val retrofit = Retrofit.Builder()
+        .baseUrl("http://220.69.208.121:5000/")
+        .addConverterFactory(GsonConverterFactory.create())
+        .build()
+    val apiService = retrofit.create(ApiService::class.java)
 
     override fun onResume() {
         super.onResume()
@@ -211,14 +224,14 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener{
         )
     }
     // Initialize CameraX, and prepare to bind the camera use cases
-
+    val cameraSelector = CameraSelector.Builder().requireLensFacing(cameraFacing).build()
     // Declare and bind preview, capture and analysis use cases
     @SuppressLint("UnsafeOptInUsageError")
     private fun bindCameraUseCases() {
         val cameraProvider = cameraProvider
             ?: throw IllegalStateException("Camera initialization failed.")
 
-        val cameraSelector = CameraSelector.Builder().requireLensFacing(cameraFacing).build()
+
 
         // Preview
         preview = Preview.Builder()
@@ -246,25 +259,22 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener{
                     }
                 }
             }
-        val recorder = Recorder.Builder()
-            .setQualitySelector(QualitySelector.from(Quality.LOWEST))
-            .build()
-        videoCapture = VideoCapture.withOutput(recorder)
+
         cameraProvider.unbindAll()
 
         try {
             // Preview와 ImageAnalyzer를 생명주기에 바인딩
-            if (isRecording) {
-                // Preview와 VideoCapture만 바인딩
-                cameraProvider.bindToLifecycle(
-                    this, cameraSelector, preview, videoCapture
-                )
-            } else {
+
                 // Preview와 ImageAnalyzer 바인딩 (녹화 종료 후 손 검출 재개)
-                cameraProvider.bindToLifecycle(
-                    this@CameraFragment, cameraSelector, preview, imageAnalyzer
-                )
-            }
+            camera = cameraProvider.bindToLifecycle(
+                this@CameraFragment, cameraSelector, preview, imageAnalyzer
+            )
+
+            val recorder = Recorder.Builder()
+                .setQualitySelector(QualitySelector.from(Quality.HIGHEST))
+
+                .build()
+            videoCapture = VideoCapture.withOutput(recorder)
             preview?.setSurfaceProvider(fragmentCameraBinding.viewFinder.surfaceProvider)
 
 
@@ -331,109 +341,122 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener{
 
 
     override fun startRecording() {
+
+
         if (videoCapture == null || isRecording) {
             return
         }
+        // 메인 스레드에서 실행되도록 수정
+        ContextCompat.getMainExecutor(requireContext()).execute {
+            val videoFileName = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+                .format(System.currentTimeMillis())
 
-        val videoFileName = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
-            .format(System.currentTimeMillis())
-
-        val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, videoFileName)
-            put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/CameraX-Video")
-            }
-        }
-
-        val mediaStoreOutput = MediaStoreOutputOptions.Builder(
-            requireContext().contentResolver,
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        ).setContentValues(contentValues)
-            .build()
-
-        Log.d("영상", "start() 호출 전에 로그")
-        currentRecording = videoCapture!!.output
-            .prepareRecording(requireContext(), mediaStoreOutput)
-            .apply {
-                if (PermissionChecker.checkSelfPermission(requireContext(), Manifest.permission.RECORD_AUDIO) ==
-                    PermissionChecker.PERMISSION_GRANTED) {
-                    withAudioEnabled()
-
-                    Log.d("권한", "$currentRecording")
-                } else {
-                    Log.d("권한", "권한 없음")
+            val contentValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, videoFileName)
+                put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/CameraX-Video")
                 }
             }
-            .start(ContextCompat.getMainExecutor(requireContext())) { recordEvent ->
-                Log.d("녹화 이벤트", "RecordEvent: $recordEvent") // 모든 이벤트 로그 확인
-                try {
 
-                    when (recordEvent) {
-                        is VideoRecordEvent.Start -> {
-                            isRecording = true
-                            Log.d(TAG, "Recording started")
-                        }
-                        is VideoRecordEvent.Finalize -> {
-                            // 녹화 종료 시 저장 프로세스 시작
-                            saveVideoToGallery(recordEvent)
-                        }
+            val mediaStoreOutput = MediaStoreOutputOptions.Builder(
+                requireContext().contentResolver,
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            ).setContentValues(contentValues)
+                .build()
+            val mediaUri=Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES).toString()+"/CameraX-Video/"+videoFileName+".mp4"
+            Log.d("uri체크",mediaUri)
+
+            cameraProvider?.unbindAll()
+            camera = cameraProvider?.bindToLifecycle(
+                this@CameraFragment, cameraSelector, preview, videoCapture
+            )
+
+            currentRecording = videoCapture!!.output
+                .prepareRecording(requireContext(), mediaStoreOutput)
+                .apply {
+                    if (PermissionChecker.checkSelfPermission(requireContext(), Manifest.permission.RECORD_AUDIO) ==
+                        PermissionChecker.PERMISSION_GRANTED) {
+                        withAudioEnabled()
                     }
-                } catch (e: Exception) {
-                    Log.e("오류", "녹화 이벤트 처리 중 오류 발생: ${e.message}")
-                    // 사용자에게 오류 메시지 표시
-                    Toast.makeText(requireContext(), "녹화 이벤트 처리 중 오류가 발생했습니다.", Toast.LENGTH_SHORT).show()
                 }
-            }
+                .start(ContextCompat.getMainExecutor(requireContext())) { recordEvent ->
+                    try {
+                        when (recordEvent) {
+                            is VideoRecordEvent.Start -> {
+                                isRecording = true
 
-        Log.d("영상", "currentRecording: $currentRecording")
+
+                            }
+                            is VideoRecordEvent.Finalize -> {
+                                val uri = createPartFromUri(mediaUri)
+                                apiService.uploadVideo(uri).enqueue(object : retrofit2.Callback<ResponseBody>{
+                                    override fun onResponse(
+                                        call: Call<ResponseBody>,
+                                        response: Response<ResponseBody>
+                                    ) {
+                                        if (response.isSuccessful) {
+                                            // 업로드 성공
+                                            Log.d(TAG, "Upload successful: ${response.body()}")
+                                            val file = File(mediaUri) // URI로부터 파일 경로를 가져옵니다.
+                                            if (file.exists()) {
+                                                if (file.delete()) {
+                                                    Log.d(TAG, "File deleted successfully: ${file.path}")
+                                                } else {
+                                                    Log.e(TAG, "Failed to delete file: ${file.path}")
+                                                }
+                                            } else {
+                                                Log.e(TAG, "File does not exist: ${file.path}")
+                                            }
+                                        } else {
+                                            // 업로드 실패
+                                            Log.e(TAG, "Upload failed: ${response.errorBody()}")
+                                        }
+                                    }
+
+                                    override fun onFailure(call: Call<ResponseBody>, t: Throwable) {
+                                        Log.e(TAG, "Upload error: ${t.message}")
+                                    }
+
+                                }
+
+                                )
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("오류", "녹화 이벤트 처리 중 오류 발생: ${e.message}")
+                        Toast.makeText(requireContext(), "녹화 이벤트 처리 중 오류가 발생했습니다.", Toast.LENGTH_SHORT).show()
+                    }
+                }
+        }
     }
 
     override fun stopRecording() {
+
         if (!isRecording) {
             Log.e("CameraFragment", "녹화가 진행 중이 아닙니다.")
             return
         }
         if (currentRecording == null) return
-
+        ContextCompat.getMainExecutor(requireContext()).execute {
         currentRecording?.stop()
         currentRecording = null
         isRecording = false
         // saveVideoToGallery()를 stopRecording에서 호출하지 않음
-    }
+        cameraProvider?.unbindAll()
+        camera = cameraProvider?.bindToLifecycle(
+            this, cameraSelector, preview, imageAnalyzer
+        )
 
-    private fun saveVideoToGallery(recordEvent: VideoRecordEvent.Finalize) {
-        // MediaStore에 이미 저장된 파일 경로 가져오기
-        val values = ContentValues().apply {
-            put(MediaStore.Video.Media.DISPLAY_NAME, "video_${System.currentTimeMillis()}")
-            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-            put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES)
-            put(MediaStore.Video.Media.IS_PENDING, 1)  // 비디오가 아직 사용 중임을 나타냄
-        }
-        val uri = requireContext().contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-        Log.d("filePath확인", uri.toString())
-
-        if (uri != null) {
-            // 완료 후 IS_PENDING 상태를 해제
-            val values = ContentValues().apply {
-                put(MediaStore.Video.Media.IS_PENDING, 0)
-            }
-            requireContext().contentResolver.update(uri, values, null, null)
-        } else {
-            Log.e("오류", "비디오 URI가 null입니다.")
         }
     }
-
-    fun getRealPathFromURI(contentUri: Uri): String? {
-        val projection = arrayOf(MediaStore.Video.Media.DATA)
-        val cursor = requireContext().contentResolver.query(contentUri, projection, null, null, null)
-        cursor?.use {
-            val columnIndex = it.getColumnIndexOrThrow(MediaStore.Video.Media.DATA)
-            if (it.moveToFirst()) {
-                return it.getString(columnIndex)
-            }
-        }
-        return null
+    fun createPartFromUri(uri: String):MultipartBody.Part{
+        val file =File(uri)
+        val requestFile = RequestBody.create("video/mp4".toMediaTypeOrNull(),file)
+        return MultipartBody.Part.createFormData("file",file.name,requestFile)
     }
+
+
+
 
 }

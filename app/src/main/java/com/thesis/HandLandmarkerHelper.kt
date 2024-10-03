@@ -257,12 +257,19 @@ class HandLandmarkerHelper(
                     speakOut("준비가 완료되었습니다.")
                     flag=false
                     tts_text.setText("준비 완료")
-                    cameraFragment.startRecording()
+                    Handler(Looper.getMainLooper()).postDelayed({
+
+                        cameraFragment.startRecording()
+                        tts_text.setText("녹화 시작") // 2초 뒤에 tts_text를 업데이트
+
+                    },2000)
 
                     Handler(Looper.getMainLooper()).postDelayed({
                         Log.d(TAG, "Stopping recording after 6 seconds.")
                         cameraFragment.stopRecording()
-                    },6000)
+                    },8000)
+
+
 
 
 
